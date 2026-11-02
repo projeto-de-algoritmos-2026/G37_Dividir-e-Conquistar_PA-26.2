@@ -66,14 +66,35 @@ ao usuário usa a fórmula de haversine.
 
 ## Screenshots
 
-> Screenshots do mapa serão adicionados aqui.
+Locais reais de uma categoria carregados do OpenStreetMap (aqui, os 126
+hospitais do DF):
+
+![Locais carregados no mapa](docs/screenshots/01-locais-carregados.png)
+
+Par mais próximo de **locais diferentes** (em vermelho), com as duplicatas
+ignoradas e as métricas do dividir e conquistar comparadas com as da força
+bruta. A linha laranja é a divisão principal do algoritmo:
+
+![Par mais próximo calculado](docs/screenshots/02-par-mais-proximo.png)
+
+Zoom no par encontrado — dois cadastros a poucos metros, junto ao Hospital
+Materno e Infantil de Brasília:
+
+![Zoom no par mais próximo](docs/screenshots/03-zoom-no-par.png)
+
+Com pontos aleatórios dá para ver a **linha de corte** da divisão: 357
+comparações no dividir e conquistar contra 44.850 na força bruta para os mesmos
+300 pontos:
+
+![Divisão principal do algoritmo](docs/screenshots/04-divisao-algoritmo.png)
 
 ## Instalação
 
-Linguagem: Python 3.9+<br>
-Framework: FastAPI (backend) e Leaflet (frontend, HTML + JavaScript puro, sem build)<br>
+Linguagem: Python 3.9+ (backend) e Node.js 18+ (frontend)<br>
+Framework: FastAPI (backend, Python) e React + Vite com Leaflet (frontend, via npm)<br>
 
-**Pré-requisitos:** Python 3.9 ou superior.
+**Pré-requisitos:** Python 3.9 ou superior (backend) e Node.js 18+ com npm
+(frontend).
 
 ```bash
 # 1. ambiente virtual (evita o erro externally-managed-environment)
@@ -90,9 +111,12 @@ cd backend && python3 baixar_dados.py && cd ..
 python3 run.py
 ```
 
-Abra **[http://127.0.0.1:5500](http://127.0.0.1:5500)**. A API fica em
-`http://127.0.0.1:8000`, com documentação interativa em **`/docs`** — dá para
-testar todos os endpoints por lá, sem precisar do mapa.
+O frontend precisa de **Node.js 18+**. Na primeira vez, o `run.py` roda
+`npm install` sozinho para instalar as dependências do frontend (React e
+Leaflet); você também pode fazer isso manualmente com `cd frontend && npm
+install`. O Vite serve a interface em **[http://127.0.0.1:5500](http://127.0.0.1:5500)**.
+A API fica em `http://127.0.0.1:8000`, com documentação interativa em
+**`/docs`** — dá para testar todos os endpoints por lá, sem precisar do mapa.
 
 ### Os dados
 
@@ -276,8 +300,19 @@ backend/
 ├── requirements.txt
 └── data/                  locais baixados, um JSON por categoria (vai no git)
 frontend/
-├── index.html             mapa Leaflet e painel de controle
-└── app.js                 chamadas à API e desenho do resultado
+├── index.html             raiz do Vite
+├── package.json           dependencias (React, Leaflet) e scripts
+├── vite.config.js         configura o Vite (porta 5500)
+└── src/
+    ├── main.jsx           ponto de entrada React
+    ├── App.jsx            estado e orquestracao
+    ├── index.css          estilos do painel
+    ├── config.js          API_URL, limites do DF, constantes
+    ├── api.js             chamadas a API
+    ├── format.js          formatacao de distancia, tempo e numeros
+    └── components/
+        ├── MapaLeaflet.jsx  mapa Leaflet (imperativo, canvas)
+        └── Painel.jsx       painel de controle
 run.py                     sobe backend e frontend juntos
 ```
 
@@ -299,12 +334,17 @@ run.py                     sobe backend e frontend juntos
   download deu certo (um arquivo antigo nunca é trocado por um pela metade).
 - **`main.py`** — endpoints, validação dos pedidos e conversão dos passos da
   recursão de volta para longitude, pronta para desenhar no mapa.
-- **`frontend/`** — mapa com Leaflet. Carrega as categorias e os locais pela
-  API, envia só `lat`/`lon` para o cálculo, destaca o par mais próximo e mantém
-  a lista de pares removidos. A divisão principal (nível 0 da recursão, pedida com
-  `max_nivel_passos: 0`) é desenhada como linha de corte e faixa central.
-  Os nomes vindos do OpenStreetMap entram na página só como texto, nunca
-  como HTML.
+- **`frontend/`** — interface em **React + Vite**. O estado e a orquestração
+  ficam no `App.jsx`, o painel de controle em `Painel.jsx` e o mapa em
+  `MapaLeaflet.jsx`, onde o Leaflet é desenhado de forma imperativa
+  (`useRef`/`useEffect`) sobre um canvas para aguentar milhares de pontos.
+  Carrega as categorias e os locais pela API, envia só `lat`/`lon` (e se tem
+  nome) para o cálculo, pede a divisão principal (nível 0 da recursão) com
+  `max_nivel_passos: 0` e a desenha como linha de corte e faixa central,
+  destaca o par mais próximo e mantém a lista de pares removidos. Os nomes
+  vindos do OpenStreetMap entram na página só como texto, nunca como HTML
+  (no React via JSX escapado e, nos popups do Leaflet, via
+  `createElement`/`textContent`).
 
 **Bibliotecas:** nenhuma função pronta de geometria ou de par mais próximo
 (como `scipy.spatial`) é usada — o algoritmo é todo implementado do zero.
@@ -339,7 +379,8 @@ um download que falha não apaga os dados antigos.
 
 ```bash
 python3 backend/main.py                 # só a API
-cd frontend && python3 -m http.server 5500   # só a interface
+cd frontend && npm install              # primeira vez
+cd frontend && npm run dev              # só a interface (Vite, porta 5500)
 cd backend && python3 -m unittest -v    # só os testes
 cd backend && python3 baixar_dados.py   # só o download dos dados
 ```
