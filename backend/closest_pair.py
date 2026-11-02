@@ -1,7 +1,11 @@
 import math
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
+# Numero maximo de vizinhos (seguintes em y) que cada ponto da faixa precisa
+# comparar. Prova classica: numa caixa delta x 2*delta cabem no maximo 8
+# pontos com distancia >= delta entre si, ou seja, 7 alem do proprio ponto.
 MAX_VIZINHOS_FAIXA = 7
 
 
@@ -189,3 +193,57 @@ def forca_bruta(pontos: List[Ponto]) -> Resultado:
     contador = {"comparacoes": 0}
     d, a, b = _forca_bruta_trecho(pontos, contador)
     return Resultado(ponto_a=a, ponto_b=b, distancia=d, comparacoes=contador["comparacoes"])
+
+
+@dataclass
+class Duplicata:
+    mantido: Ponto
+    removido: Ponto
+    distancia: float
+
+
+def remover_duplicatas(
+    pontos: List[Ponto],
+    limiar: float,
+    escolher_remocao: Optional[Callable[[Ponto, Ponto], Ponto]] = None,
+    limite_remocoes: int = 2000,
+    tempo_maximo_s: Optional[float] = None,
+) -> Tuple[List[Ponto], List[Duplicata], bool]:
+    """
+    Tira da lista os pontos que sao duplicatas de outro (a menos de `limiar`),
+    para que o par mais proximo do que sobrar seja de lugares DIFERENTES.
+
+    Usa o proprio dividir e conquistar: acha o par mais proximo; se ele esta a
+    menos de `limiar`, e uma duplicata -> tira um dos dois e repete. Para
+    quando o par mais proximo ja esta alem do limiar (ou restam 2 pontos).
+
+    escolher_remocao(a, b) devolve qual dos dois sai (padrao: o segundo).
+    limite_remocoes e tempo_maximo_s evitam que uma lista enorme, cheia de
+    duplicatas, demore demais; se algum deles for atingido com duplicatas
+    ainda por tirar, o terceiro valor devolvido (truncada) e True.
+
+    Devolve (pontos que sobraram, duplicatas removidas, truncada).
+    """
+    restantes = list(pontos)
+    duplicatas: List[Duplicata] = []
+    truncada = False
+    inicio = time.perf_counter()
+
+    while len(restantes) > 2:
+        par = par_mais_proximo(restantes, max_nivel_passos=-1)
+        if par.distancia >= limiar:
+            break  # o que sobrou sao lugares diferentes
+
+        estourou_tempo = (
+            tempo_maximo_s is not None and time.perf_counter() - inicio >= tempo_maximo_s
+        )
+        if len(duplicatas) >= limite_remocoes or estourou_tempo:
+            truncada = True
+            break
+
+        sai = escolher_remocao(par.ponto_a, par.ponto_b) if escolher_remocao else par.ponto_b
+        fica = par.ponto_a if sai.id == par.ponto_b.id else par.ponto_b
+        duplicatas.append(Duplicata(mantido=fica, removido=sai, distancia=par.distancia))
+        restantes = [p for p in restantes if p.id != sai.id]
+
+    return restantes, duplicatas, truncada
