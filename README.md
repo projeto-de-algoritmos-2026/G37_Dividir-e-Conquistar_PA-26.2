@@ -384,3 +384,7 @@ cd frontend && npm run dev              # só a interface (Vite, porta 5500)
 cd backend && python3 -m unittest -v    # só os testes
 cd backend && python3 baixar_dados.py   # só o download dos dados
 ```
+
+## Vídeo de Apresentação
+
+[Assista no YouTube](https://youtu.be/e4L0wWQzexs)
