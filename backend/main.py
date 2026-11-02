@@ -6,8 +6,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from closest_pair import Ponto, forca_bruta, par_mais_proximo
+from closest_pair import Ponto, forca_bruta, par_mais_proximo, remover_duplicatas
 from geo import distancia_haversine, projetar, x_para_lon
+from locais import CATEGORIAS, carregar_locais, listar_categorias
 
 app = FastAPI(title="Par de Pontos Mais Proximo - Dividir e Conquistar")
 
@@ -26,6 +27,9 @@ DF_LON_MIN, DF_LON_MAX = -48.29, -47.31
 LIMITE_FORCA_BRUTA = 3000
 LIMITE_PONTOS = 20000
 
+# a limpeza de duplicatas repete o algoritmo varias vezes; este e o tempo maximo dela
+TEMPO_MAXIMO_LIMPEZA_S = 10
+
 
 # ---------- modelos ----------
 
@@ -35,8 +39,16 @@ class PontoEntrada(BaseModel):
     lon: float = Field(ge=-180, le=180)
 
 
+class PontoPedido(PontoEntrada):
+    # so serve para decidir qual duplicata manter: fica a que tem nome
+    tem_nome: bool = False
+
+
 class PedidoPar(BaseModel):
-    pontos: List[PontoEntrada] = Field(min_length=2, max_length=LIMITE_PONTOS)
+    pontos: List[PontoPedido] = Field(min_length=2, max_length=LIMITE_PONTOS)
+    # se informado, antes de achar o par tira as duplicatas (locais a menos de
+    # tantos metros de outro), para o resultado ser de lugares diferentes
+    ignorar_duplicatas_ate_m: Optional[float] = Field(default=None, ge=0, le=1000)
     comparar_forca_bruta: bool = True
     limite_caso_base: int = Field(default=3, ge=3, le=50)
     max_nivel_passos: int = Field(default=4, ge=0, le=10)
@@ -66,6 +78,19 @@ class Metricas(BaseModel):
     comparacoes: int
 
 
+class DuplicataSaida(BaseModel):
+    indice_mantido: int
+    indice_removido: int
+    distancia_metros: float
+
+
+class Limpeza(BaseModel):
+    limiar_m: float
+    duplicatas: List[DuplicataSaida]
+    tempo_ms: float
+    truncada: bool  # True se parou no limite de tempo/quantidade com duplicatas sobrando
+
+
 class RespostaPar(BaseModel):
     ponto_a: PontoSaida
     ponto_b: PontoSaida
@@ -73,7 +98,27 @@ class RespostaPar(BaseModel):
     dividir_conquistar: Metricas
     forca_bruta: Optional[Metricas] = None  # None se desligado ou n grande demais
     mesmo_resultado: Optional[bool] = None
+    limpeza: Optional[Limpeza] = None  # None se nao pediu para ignorar duplicatas
     passos: List[PassoSaida]
+
+
+class CategoriaSaida(BaseModel):
+    chave: str
+    rotulo: str
+    disponivel: bool  # False se os dados ainda nao foram baixados
+
+
+class LocalSaida(BaseModel):
+    lat: float
+    lon: float
+    nome: Optional[str] = None
+    osm: Optional[str] = None  # ex.: "node/123", para montar o link do OpenStreetMap
+
+
+class RespostaLocais(BaseModel):
+    rotulo: str
+    total: int  # quantos locais existem no arquivo
+    locais: List[LocalSaida]  # no maximo LIMITE_PONTOS
 
 
 class LinhaBenchmark(BaseModel):
@@ -119,6 +164,41 @@ def _cronometrar(funcao, *args, **kwargs):
 def rota_par_mais_proximo(pedido: PedidoPar):
     pontos, lat_ref = _projetar_pontos(pedido.pontos)
 
+    # 1. (opcional) tira as duplicatas, para o par achado ser de locais diferentes
+    limpeza = None
+    if pedido.ignorar_duplicatas_ate_m:
+        def quem_sai(a: Ponto, b: Ponto) -> Ponto:
+            # entre dois cadastros do mesmo lugar, tira o que nao tem nome
+            if not pedido.pontos[a.id].tem_nome and pedido.pontos[b.id].tem_nome:
+                return a
+            return b
+
+        (pontos, removidas, truncada), tempo_limpeza = _cronometrar(
+            remover_duplicatas,
+            pontos,
+            pedido.ignorar_duplicatas_ate_m,
+            quem_sai,
+            tempo_maximo_s=TEMPO_MAXIMO_LIMPEZA_S,
+        )
+        limpeza = Limpeza(
+            limiar_m=pedido.ignorar_duplicatas_ate_m,
+            duplicatas=[
+                DuplicataSaida(
+                    indice_mantido=d.mantido.id,
+                    indice_removido=d.removido.id,
+                    distancia_metros=distancia_haversine(
+                        pedido.pontos[d.mantido.id].lat, pedido.pontos[d.mantido.id].lon,
+                        pedido.pontos[d.removido.id].lat, pedido.pontos[d.removido.id].lon,
+                    ),
+                )
+                for d in removidas
+            ],
+            tempo_ms=tempo_limpeza,
+            truncada=truncada,
+        )
+
+    # 2. acha o par mais proximo do que sobrou (os "indices" continuam sendo os
+    #    da lista enviada, porque cada Ponto guarda sua posicao original)
     resultado, tempo_dc = _cronometrar(
         par_mais_proximo,
         pontos,
@@ -163,6 +243,7 @@ def rota_par_mais_proximo(pedido: PedidoPar):
         dividir_conquistar=Metricas(tempo_ms=tempo_dc, comparacoes=resultado.comparacoes),
         forca_bruta=metricas_fb,
         mesmo_resultado=mesmo,
+        limpeza=limpeza,
         passos=passos,
     )
 
@@ -173,6 +254,30 @@ def rota_pontos_aleatorios(
     seed: Optional[int] = None,
 ):
     return _gerar_aleatorios(n, seed)
+
+
+@app.get("/categorias", response_model=List[CategoriaSaida])
+def rota_categorias():
+    return listar_categorias()
+
+
+@app.get("/locais", response_model=RespostaLocais)
+def rota_locais(categoria: str = Query(...)):
+    if categoria not in CATEGORIAS:
+        raise HTTPException(status_code=404, detail=f"Categoria desconhecida: {categoria}.")
+    try:
+        todos = carregar_locais(categoria)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Os dados dessa categoria ainda nao foram baixados. "
+            "Rode: python3 baixar_dados.py (dentro da pasta backend).",
+        )
+    return RespostaLocais(
+        rotulo=CATEGORIAS[categoria]["rotulo"],
+        total=len(todos),
+        locais=todos[:LIMITE_PONTOS],
+    )
 
 
 @app.get("/benchmark", response_model=List[LinhaBenchmark])
