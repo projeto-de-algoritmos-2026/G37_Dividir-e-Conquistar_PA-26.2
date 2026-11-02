@@ -1,7 +1,13 @@
 import random
 import unittest
 
-from closest_pair import MAX_VIZINHOS_FAIXA, Ponto, forca_bruta, par_mais_proximo
+from closest_pair import (
+    MAX_VIZINHOS_FAIXA,
+    Ponto,
+    forca_bruta,
+    par_mais_proximo,
+    remover_duplicatas,
+)
 from geo import projetar, x_para_lon
 
 
@@ -78,6 +84,66 @@ class TestParMaisProximo(unittest.TestCase):
         self.assertTrue(all(p.nivel <= 2 for p in r.passos))
         self.assertEqual(r.passos[0].nivel, 0)  # primeiro passo e a divisao principal
         self.assertEqual(r.passos[0].n_pontos, 200)
+
+
+class TestRemoverDuplicatas(unittest.TestCase):
+    def test_cluster_de_tres_fica_so_com_um(self):
+        # tres pontos quase no mesmo lugar e dois bem distantes
+        pontos = [Ponto(0, 0, 0), Ponto(1, 1, 0), Ponto(2, 0, 1), Ponto(3, 500, 0), Ponto(4, 0, 900)]
+        restantes, dups, truncada = remover_duplicatas(pontos, limiar=10)
+        self.assertEqual(len(dups), 2)
+        self.assertEqual(len(restantes), 3)
+        self.assertFalse(truncada)
+        self.assertGreaterEqual(par_mais_proximo(restantes).distancia, 10)
+
+    def test_sem_duplicatas_nao_remove_nada(self):
+        pontos = [Ponto(i, i * 100.0, 0.0) for i in range(6)]
+        restantes, dups, truncada = remover_duplicatas(pontos, limiar=10)
+        self.assertEqual(len(restantes), 6)
+        self.assertEqual(dups, [])
+        self.assertFalse(truncada)
+
+    def test_escolha_de_qual_remover_e_respeitada(self):
+        pontos = [Ponto(0, 0, 0), Ponto(1, 1, 0), Ponto(2, 1000, 0)]
+        restantes, dups, _ = remover_duplicatas(
+            pontos, limiar=10, escolher_remocao=lambda a, b: a if a.id == 0 else b
+        )
+        self.assertEqual((dups[0].removido.id, dups[0].mantido.id), (0, 1))
+        self.assertEqual({p.id for p in restantes}, {1, 2})
+
+    def test_limite_de_remocoes_marca_truncada(self):
+        pontos = [Ponto(i, float(i), 0.0) for i in range(10)]  # 10 pontos colados
+        restantes, dups, truncada = remover_duplicatas(pontos, limiar=100, limite_remocoes=3)
+        self.assertEqual(len(dups), 3)
+        self.assertEqual(len(restantes), 7)
+        self.assertTrue(truncada)
+
+    def test_tempo_maximo_marca_truncada(self):
+        pontos = [Ponto(i, float(i), 0.0) for i in range(10)]
+        _, _, truncada = remover_duplicatas(pontos, limiar=100, tempo_maximo_s=0)
+        self.assertTrue(truncada)
+
+    def test_todos_iguais_termina_com_dois(self):
+        pontos = [Ponto(i, 5.0, 5.0) for i in range(6)]
+        restantes, dups, truncada = remover_duplicatas(pontos, limiar=1)
+        self.assertEqual(len(restantes), 2)
+        self.assertEqual(len(dups), 4)
+        self.assertFalse(truncada)
+
+    def test_invariantes_em_conjuntos_aleatorios(self):
+        rng = random.Random(11)
+        for _ in range(200):
+            pontos = gerar(rng.randint(2, 60), rng, inteiros=True)  # muitos empates
+            limiar = rng.choice([1, 2, 3])
+            restantes, dups, _ = remover_duplicatas(pontos, limiar=limiar)
+
+            ids_restantes = {p.id for p in restantes}
+            ids_removidos = {d.removido.id for d in dups}
+            self.assertEqual(len(ids_restantes) + len(ids_removidos), len(pontos))
+            self.assertFalse(ids_restantes & ids_removidos)
+            self.assertTrue(all(d.distancia < limiar for d in dups))
+            if len(restantes) > 2:  # sobrou so lugar diferente
+                self.assertGreaterEqual(forca_bruta(restantes).distancia, limiar)
 
 
 class TestGeo(unittest.TestCase):
